@@ -1,0 +1,88 @@
+This is a project to investigate the use of memcache to implement concurrent,
+distributed data structures.
+
+Currently implemented is a double-ended queue in the form of a Python client
+library (see memcache_deque.py) and having the following properties:
+
+    * O(1) push and pop, consistent & atomic
+    * lock-free by way of CAS
+    * mutation latency on the order of a few memcache calls
+    * value size limited only by memcache entry limit
+    * supports distributed memcache configurations (multiple backends)
+    * written against common Python memcache API
+
+Please be aware of the very significant caveats:
+
+    * low durability - the collection will be corrupted on loss of any
+      underlying memcache entry (e.g. from evictions or memcache server
+      restart).  The corruption state is detectable and reported by the
+      client library.
+
+    * CAS over a network (as opposed to against local memory) is susceptible
+      to fairness issues.  When the collection is under high contention,
+      a client can be at a disadvantage due to slowness of its machine or
+      implementation or network proximity relative to other clients [1].
+
+    * due to the eviction issue, mixing these collections with other
+      classes of data in the same memcache instance is problematic
+      (i.e. less important items may corrupt the data structure)
+
+The eviction issue can be mitigated.  Most importantly, you probably want
+to dedicate a memcache instance to hold fragile data such as these collections
+and manage it so as to not reach the full state.  The memcached server has an
+option to disable evictions (-M) which can help in ensuring the system is
+healthy.
+
+Regarding performance, very roughly I've seen the deque reach contention limits
+at ~400 combined read+write operations/s on a slow laptop and ~1,200 ops/s on
+a decent workstation given small values and the pure Python memcached client
+talking to memcached on the same machine via TCP.
+
+In applications where exact item ordering is not important, higher operation
+rates can be achieved by application-level sharding to multiple deque instances.
+
+
+IMPLEMENTATION NOTES
+
+For the deque I've implemented the simplest (correct) lock-free algorithm I
+could find, which not surprisingly doesn't allow disjoint access of each queue
+end.  Algorithms supporting disjoint access redily exist, such as presented in
+"Lock-Free and Practical Doubly Linked List-Based Deques Using Single-Word
+Compare-and-Swap", Sundell and Tsigas, 2005.  This would effectively halve the
+contention rate when the deque is used as a FIFO, but at a considerable
+complexity cost.
+
+I'm aware of simple lock-free queue and list implementations which attempt to
+employ memcache's atomic increment operation to generate node addresses.
+However they all seem to suffer from unhandled race conditions and it's not
+obvious to me there is a fix.  Increment can be used as a locking mechanism,
+however.  A locking approach may be more fair to clients relative to CAS over
+a network, but introduces its own complexities in needing to address client
+deaths, deadlocks, etc.
+
+
+DISCLAIMER
+
+Although Google, Inc. holds the copyright, memcache-collections is not a
+Google product.
+
+
+CONTRIBUTIONS
+
+Contributions such as porting the client library to other languages are welcome,
+assuming they are of high quality.  You'll need to sign a contributor licence
+agreement with Google.
+
+    http://developers.google.com/open-source/cla/individual
+    http://developers.google.com/open-source/cla/corporate
+
+
+FOOTNOTES
+
+[1] Redis' author rightly raises the CAS fairness issue at
+https://groups.google.com/d/msg/redis-db/a4zK2k1Lefo/hOjM9iwDGhIJ,
+though beyond that he's incorrect in saying that CAS cannot be employed to
+mutate multiple items atomically.  It can by layering one level of indirection.
+
+
+John Belmonte <jbelmonte@google.com>
