@@ -66,6 +66,8 @@ class _DequeClient:
     self.mc = memcache_client
 
   def SaveNode(self, node):
+    # TODO(jbelmonte): Use protocol buffers for serialization so that
+    # schema is language independant.
     if not self.mc.set(node.uuid, dumps(node)):
       raise SetError
 
