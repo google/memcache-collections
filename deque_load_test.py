@@ -14,16 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Distributed load and concurrency test for MemcacheDeque
+"""Distributed load and concurrency test for memcache_collections.deque.
 
-Run "load_test.py manager" in one shell, then any number of
-"load_test.py writer" and "load_test.py reader" in other shells.
+Run "deque_load_test.py manager" in one shell, then any number of
+"deque_load_test.py writer" and "deque_load_test.py reader" in other shells.
 
 Currently assumes everything is run on the same machine, and that memcache
 is local on the standard port.
 """
-
-__author__ = 'John Belmonte <jbelmonte@google.com>'
 
 from __future__ import division
 
@@ -33,7 +31,9 @@ from uuid import uuid4
 import sys
 import time
 
-from memcache_deque import MemcacheDeque
+from memcache_collections import deque
+
+__author__ = 'John Belmonte <jbelmonte@google.com>'
 
 # TODO(jbelmonte): take manager address, other params from the command line
 CONTROL_PORT =  50000
@@ -68,7 +68,7 @@ class ManagerProcess(Process):
     memcache_queue_name = uuid4().hex
     # TODO(jbelmonte): launch a private memcached server for the load test
     mc = GetMemcacheClient(MEMCACHE_HOSTS)
-    MemcacheDeque.create(mc, memcache_queue_name)
+    deque.create(mc, memcache_queue_name)
     # TODO(jbelmonte): graceful end of test; end-to-end checksum
     for i in range(100):
       self.q.put({
@@ -105,13 +105,13 @@ def writer():
     command = command_queue.get()
     batch_size = command['batch_size']
     mc = GetMemcacheClient(command['servers'])
-    deque = MemcacheDeque.bind(mc, command['memcache_queue_name'])
+    d = deque.bind(mc, command['memcache_queue_name'])
     value = 'x' * command['value_size']
     print('writer received command')
     batch_time = time.time()
     for i in range(batch_size):
       op_time = time.time()
-      deque.appendleft(value)
+      d.appendleft(value)
       if TARGET_RATE:
         time.sleep(max(0, 1 / TARGET_RATE - (time.time() - op_time)))
     print('done: %.1f writes per second' % (
@@ -132,12 +132,12 @@ def reader():
   while True:
     command = consumer_queue.get()
     mc = GetMemcacheClient(command['servers'])
-    deque = MemcacheDeque.bind(mc, command['memcache_queue_name'])
+    d = deque.bind(mc, command['memcache_queue_name'])
     print('reader received command')
     batch_time = time.time()
     for i in range(command['batch_size']):
       op_time = time.time()
-      deque.pop()
+      d.pop()
       if TARGET_RATE:
         time.sleep(max(0, 1 / TARGET_RATE - (time.time() - op_time)))
     print('done: %.1f reads per second' % (

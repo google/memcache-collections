@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for memcache_deque module."""
-
-__author__ = 'John Belmonte <jbelmonte@google.com>'
+"""Unit tests for memcache_collections module."""
 
 import collections
 import unittest
-from memcache_deque import MemcacheDeque
+from memcache_collections import deque
+
+__author__ = 'John Belmonte <jbelmonte@google.com>'
 
 IS_APP_ENGINE = False
 IS_APP_ENGINE_STUB = False
@@ -40,7 +40,7 @@ def GetMemcacheClient():
     return pylibmc.Client(['127.0.0.1:11211'], behaviors={'cas': True})
 
 
-class MemcacheDequeTestCase(unittest.TestCase):
+class dequeTestCase(unittest.TestCase):
 
   def setUp(self):
     if IS_APP_ENGINE_STUB:
@@ -53,7 +53,7 @@ class MemcacheDequeTestCase(unittest.TestCase):
     if IS_APP_ENGINE_STUB:
       self.testbed.deactivate()
 
-  def _TestDeque(self, d):
+  def baseTest(self, d):
     self.failUnlessRaises(IndexError, d.popleft)
     self.failUnlessRaises(IndexError, d.pop)
     d.appendleft(5)
@@ -65,27 +65,27 @@ class MemcacheDequeTestCase(unittest.TestCase):
     self.failUnlessRaises(IndexError, d.popleft)
 
   def testInMemoryDeque(self):
-    self._TestDeque(collections.deque())
+    self.baseTest(collections.deque())
 
-  def testMemcacheDeque(self):
+  def testDeque(self):
     # TODO(jbelmonte): use a mock or stub memcache client
     # TODO(jbelmonte): Write serious unit test which covers all concurrency
     # cases of the lock-free algorithm.  Current test passes even when CAS is
     # ignored...
     mc = GetMemcacheClient()
-    self._TestDeque(MemcacheDeque.create(mc))
+    self.baseTest(deque.create(mc))
 
     # test create and bind
-    d1 = MemcacheDeque.create(mc)
-    d2 = MemcacheDeque.bind(mc, d1.name)
+    d1 = deque.create(mc)
+    d2 = deque.bind(mc, d1.name)
     d1.appendleft(5)
     self.assertEqual(5, d2.pop())
     self.failUnlessRaises(IndexError, d1.popleft)
 
     # test named create and bind
     name = 'foo'
-    d1 = MemcacheDeque.create(mc, name)
-    d2 = MemcacheDeque.bind(mc, name)
+    d1 = deque.create(mc, name)
+    d2 = deque.bind(mc, name)
     self.assertEqual(name, d1.name)
     d1.appendleft(5)
     self.assertEqual(5, d2.pop())

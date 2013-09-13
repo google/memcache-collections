@@ -12,15 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Double-ended queue implemented on memcache."""
-
-__author__ = 'John Belmonte <jbelmonte@google.com>'
+"""Concurrent, distributed data structures on memcache."""
 
 import copy
 import threading
 from cPickle import dumps
 from cPickle import loads
 from uuid import uuid4
+
+__author__ = 'John Belmonte <jbelmonte@google.com>'
 
 class Error(Exception):
   """Base class for exceptions in this module."""
@@ -60,7 +60,7 @@ class _Node(object):
 
 
 class _DequeClient:
-  """Ecapsulates all memcache access."""
+  """Encapsulates all memcache access."""
 
   def __init__(self, memcache_client):
     self.mc = memcache_client
@@ -110,8 +110,7 @@ class _Status(object):
   L_PUSH = 'L_PUSH'
 
 
-# TODO(jbelmonte): move to memcache_collections.deque
-class MemcacheDeque(object):
+class deque(object):
   """Lock-free deque on memcache.
 
   Each node of the queue is held in a separate memcache entry.  Nodes are
@@ -127,20 +126,20 @@ class MemcacheDeque(object):
   Synopsis:
 
     >>> import memcache
-    >>> from memcache_deque import MemcacheDeque
+    >>> from memcache_collections import deque
     >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
-    >>> deque = MemcacheDeque.create(mc, 'my_deque')
-    >>> deque.appendleft(5)
-    >>> deque.appendleft('hello')
+    >>> d = deque.create(mc, 'my_deque')
+    >>> d.appendleft(5)
+    >>> d.appendleft('hello')
 
   then from some other process or machine:
 
-    >>> deque = MemcacheDeque.bind(mc, 'my_deque')
-    >>> deque.pop()
+    >>> d = deque.bind(mc, 'my_deque')
+    >>> d.pop()
     5
-    >>> deque.pop()
+    >>> d.pop()
     'hello'
-    >>> deque.pop()
+    >>> d.pop()
     Traceback (most recent call last):
         ...
     IndexError

@@ -2,7 +2,7 @@ This is a project to investigate the use of memcache to implement concurrent,
 distributed data structures.
 
 Currently implemented is a double-ended queue in the form of a Python client
-library (see memcache_deque.py) and having the following properties:
+library (see memcache_collections.py) and having the following properties:
 
     * O(1) push and pop, consistent & atomic
     * lock-free by way of CAS
