@@ -66,8 +66,8 @@ class _DequeClient:
     self.mc = memcache_client
 
   def SaveNode(self, node):
-    # TODO(jbelmonte): Use protocol buffers for serialization so that
-    # schema is language independant.
+    # TODO(jbelmonte): Use protocol buffers or JSON for serialization so that
+    # schema is language independent.
     if not self.mc.set(node.uuid, dumps(node)):
       raise SetError
 
@@ -119,6 +119,20 @@ class deque(object):
 
   This interface is modeled after collections.deque.  Only append and pop
   operations are supported (no length, iteration, clear, etc.).
+
+  The implementation assumes that memcache CAS does not suffer from the
+  "A->B->A" problem (valid at least for memcached).
+
+  Important note regarding CAS ID management: the Python memcache API
+  unfortunately requires client implementations to hold on to CAS ID's
+  indefinitely.  This is problematic for our use case since the number of
+  memcache entries using CAS is unbounded.  As a consequence, deque users are
+  responsible for managing CAS ID lifetime, for example by calling reset_cas()
+  on the given memcache client at appropriate times, and perhaps dedicating a
+  memcache client instance soley for use by our collections.  As far as this
+  API is concerned, it's safe to call reset_cas() outside of any public method.
+
+  This class is thread safe assuming that the given memcache client is.
 
   Based on "CAS-Based Lock-Free Algorithm for Shared Deques", Maged M. Michael,
   2003, http://www.cs.bgu.ac.il/~mpam092/wiki.files/michael-dequeues.pdf.
