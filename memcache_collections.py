@@ -21,6 +21,9 @@ from cPickle import loads
 from uuid import uuid4
 
 __author__ = 'John Belmonte <jbelmonte@google.com>'
+__all__ = ['deque', 'mcas', 'mcas_get',
+    'Error', 'NodeNotFoundError', 'SetError']
+
 
 class Error(Exception):
   """Base class for exceptions in this module."""
@@ -99,6 +102,7 @@ class _DequeClient:
     new_node.uuid = node.uuid
     new_node.__dict__.update(attributes)
     result = self.mc.cas(node.uuid, dumps(new_node))
+    # TODO(jbelmonte): pluggable "CAS ID deleter" to avoid unbounded memory use
     if result and update_on_success:
       node.__dict__.update(attributes)
     return result
@@ -307,3 +311,211 @@ class deque(object):
     """Remove and return an element from the left side of the queue.  If no
     elements are present, raises an IndexError."""
     return self._PopCommon(is_right=False)
+
+
+def _last_iter(iterable):
+  """Transforms given iterable to yield (item, is_last) tuples."""
+  it = iter(iterable)
+  last = it.next()
+  for val in it:
+    yield last, False
+    last = val
+  yield last, True
+
+
+class CasIdNotFoundError(Error):
+  """Performing MCAS on item not loaded for CAS."""
+  def __init__(self, key):
+    Error.__init__(self, 'CAS ID not found for item with key "%s"' % key)
+
+
+class _McasStatus(object):
+  UNDECIDED = 'UNDECIDED'
+  SUCCESSFUL = 'SUCCESSFUL'
+  FAILED = 'FAILED'
+
+
+class _McasRecord(object):
+
+  def __init__(self, mc, items):
+    self.uuid = uuid4().hex
+    self.status = _McasStatus.UNDECIDED
+    # We need to record CAS ID's, because helpers won't necessarily have
+    # read all the items.  The Python memcache API is problematic in that
+    # it doesn't expose these ID's officially.  Whether or not and how the
+    # ID's are accessed will depend on the client.  We could have users
+    # supply old values, as is traditional for CAS, but then the implementation
+    # would need to make extra reads, and guard against the ABA problem.
+    #
+    # In this record we store (key, cas_id, current_value, new_value) for each
+    # item.  This is fairly constraining since all the keys and values involved
+    # in the mcas operation must fit into a single memcache entry.  If that's
+    # prohibitive it's feasible to store values separately.
+    #
+    # TODO(jbelmonte): pluggable "CAS ID extractor"
+    self.items = []
+    for (key, current_value, new_value) in sorted(items):
+      cas_id = mc.cas_ids.get(key)
+      if cas_id is None:
+        raise CasIdNotFoundError(key)
+      self.items.append((key, cas_id, current_value, new_value))
+
+  def __getstate__(self):
+    # No need to store UUID as it's the key.  Unpickling party must restore it.
+    state = self.__dict__.copy()
+    del state['uuid']
+    return state
+
+  def __eq__(self, other):
+    return self.__dict__ == other.__dict__
+
+  def __ne__(self, other):
+    return self.__dict__ != other.__dict__
+
+  # memcache value prefix used to identify MCAS record references
+  REF_SENTINEL = 'memcache-collections-mcas-record:'
+
+  def make_ref(self):
+    """Return reference to this MCAS record to be stored in memcache."""
+    return self.REF_SENTINEL + self.uuid
+
+  @staticmethod
+  def deref(dc, value):
+    """Return MCAS record if given value is a reference, else none."""
+    if type(value) == str and value.startswith(self.REF_SENTINEL):
+      return dc.LoadNodeFromUuid(value[len(self.REF_SENTINEL):])
+
+
+def _explicit_cas(mc, key, value, cas_id):
+    """Perform CAS given explicit unique ID."""
+    # TODO(jbelmonte): pluggable "CAS ID injector"
+    original_id = mc.cas_ids.get(key)
+    mc.cas_ids[key] = cas_id
+    result = mc.cas(key, value)
+    if original_id == None:
+      del mc.cas_ids[key]
+    else:
+      mc.cas_ids[key] = original_id
+    return result
+
+
+class _ReleaseMcas(Exception):
+  pass
+
+
+def _mcas_help(dc, mcas_record):
+  result_status = _McasStatus.SUCCESSFUL
+  mcas_ref = mcas_record.make_ref()
+  try:
+    if mcas_record.status != _McasStatus.UNDECIDED:
+      raise _ReleaseMcas  # MCAS already failed or succeeded
+    # phase 1: change all locations to reference MCAS record
+    for key, cas_id, _, _ in mcas_record.items:
+      while True:
+        # Note unlike original algorithm, we don't need conditional CAS since
+        # memcached doesn't have an ABA issue.
+        if _explicit_cas(dc.mc, key, mcas_ref, cas_id):
+          break  # next location
+        value = dc.mc.get(key)
+        if value == mcas_ref:
+          break  # someone else succeeded with this location
+        else:
+          # TODO(jbelmonte): handle MCAS record gone
+          nested_mcas_record = _McasRecord.deref(value)
+          if nested_mcas_record:
+            _mcas_help(dc, nested_mcas_record)
+            # TODO(jbelmonte): Confirm it's possible to succeed from here--
+            # I suspect not since the nested MCAS would void our CAS ID.
+          else:
+            raise _ReleaseMcas
+  except _ReleaseMcas:
+    # From our local view we failed, but note it's possible the MCAS record has
+    # already been marked as successful, in which case we'll fail the CAS below.
+    result_status = _McasStatus.FAILED
+  # phase 2: revert locations or roll them forward to new values
+  dc.Cas(mcas_record, {'status': result_status}, update_on_success=True)
+  is_success = mcas_record.status == _McasStatus.SUCCESSFUL
+  # TODO(jbelmonte): Elide gets by noting when they were already invoked by
+  # first phase.
+  # TODO(jbelmonte): Use batch get where supported with CAS (App Engine).
+  last_cas_result = False
+  for (key, _, current_value, new_value), is_last in \
+      _last_iter(mcas_record.items):
+    value = dc.mc.gets(key)
+    if value == mcas_ref:
+      if (dc.mc.cas(key, new_value if is_success else current_value)
+          and is_last):
+        # client successfully releasing the last node is responsible for cleanup
+        dc.DeleteNode(mcas_record)
+  return is_success
+
+
+# challenge: say "memcache mcas" quickly five times
+# TODO(jbelmonte): support explicit CAS ID's
+# TODO(jbelmonte): support mcas across multiple clients
+# TODO(jbelmonte): translate NodeNotFoundError
+def mcas(mc, items):
+  """Multi-item compare-and-set.
+
+  The items must have already been read for CAS via gets().
+
+  Synopsis:
+    >>> import memcache
+    >>> from memcache_collections import mcas
+    >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
+    >>> mc.set_multi({
+    ...     'foo': {'next': 'bar'},
+    ...     'bar': {'prev': 'foo'}})
+    []
+    >>> # atomically insert new node in our doubly linked list via MCAS
+    >>> foo, bar = [mc.gets(key) for key in ('foo', 'bar')]
+    >>> mc.set('baz', {'prev': 'foo', 'next': 'bar'})
+    True
+    >>> mcas(mc, [
+    ...     ('foo', foo, {'next': 'baz'}),
+    ...     ('bar', bar, {'prev': 'baz'})])
+    True
+    >>> # always use mcas_get to access items potentially in MCAS operations
+    >>> mcas_get(mc,'foo')
+    {'next': 'baz'}
+
+  Based on "Practical lock-freedom", Keir Fraser, 2004, pp. 30-34.
+
+  Args:
+    mc: memcache client
+    items: iterable of (key, current_value, new_value) tuples.  Each item must
+    have been already loaded into the client via gets(), with old_value
+    corresponding to that loaded version.
+
+  Returns: True if MCAS completed successfully.
+
+  Raises:
+    CasIdNotFoundError: if one of the given items was not loaded for CAS
+  """
+  dc = _DequeClient(mc)
+  mcas_record = _McasRecord(mc, items)
+  dc.SaveNode(mcas_record)
+  return _mcas_help(dc, mcas_record)
+
+
+def mcas_get(mc, key):
+  """Safely read a memcache entry which may be involved in MCAS operations.
+
+  Since gets() is used internally, the item can then be used subsequently with
+  cas() or mcas().
+
+  Args:
+    mc: memcache client
+    key: memcache item key
+
+  Returns: value if memcache item exists, else None
+  """
+  dc = _DequeClient(mc)
+  while True:
+    value = mc.gets(key)
+    # TODO(jbelmonte): handle MCAS record gone
+    mcas_record = _McasRecord.deref(dc, value)
+    if mcas_record:
+      _mcas_help(dc, mcas_record)
+    else:
+      return value
