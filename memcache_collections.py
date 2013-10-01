@@ -467,24 +467,22 @@ def mcas(mc, items):
     ...     'foo': {'next': 'bar'},
     ...     'bar': {'prev': 'foo'}})
     []
+    >>> # always use mcas_get to access items potentially in MCAS operations
+    >>> foo, bar = mcas_get(mc, 'foo'), mcas_get(mc, 'bar')
     >>> # atomically insert new node in our doubly linked list via MCAS
-    >>> foo, bar = [mc.gets(key) for key in ('foo', 'bar')]
     >>> mc.set('baz', {'prev': 'foo', 'next': 'bar'})
     True
     >>> mcas(mc, [
     ...     ('foo', foo, {'next': 'baz'}),
     ...     ('bar', bar, {'prev': 'baz'})])
     True
-    >>> # always use mcas_get to access items potentially in MCAS operations
-    >>> mcas_get(mc,'foo')
-    {'next': 'baz'}
 
   Based on "Practical lock-freedom", Keir Fraser, 2004, pp. 30-34.
 
   Args:
     mc: memcache client
     items: iterable of (key, current_value, new_value) tuples.  Each item must
-    have been already loaded into the client via gets(), with old_value
+    have been already loaded into the client via gets(), with current_value
     corresponding to that loaded version.
 
   Returns: True if MCAS completed successfully.
