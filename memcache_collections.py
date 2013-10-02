@@ -379,11 +379,11 @@ class _McasRecord(object):
     """Return reference to this MCAS record to be stored in memcache."""
     return self.REF_SENTINEL + self.uuid
 
-  @staticmethod
-  def deref(dc, value):
+  @classmethod
+  def deref(cls, dc, value):
     """Return MCAS record if given value is a reference, else none."""
-    if type(value) == str and value.startswith(self.REF_SENTINEL):
-      return dc.LoadNodeFromUuid(value[len(self.REF_SENTINEL):])
+    if type(value) == str and value.startswith(cls.REF_SENTINEL):
+      return dc.LoadNodeFromUuid(value[len(cls.REF_SENTINEL):])
 
 
 def _explicit_cas(mc, key, value, cas_id):
@@ -421,7 +421,7 @@ def _mcas_help(dc, mcas_record):
           break  # someone else succeeded with this location
         else:
           # TODO(jbelmonte): handle MCAS record gone
-          nested_mcas_record = _McasRecord.deref(value)
+          nested_mcas_record = _McasRecord.deref(dc, value)
           if nested_mcas_record:
             _mcas_help(dc, nested_mcas_record)
             # TODO(jbelmonte): Confirm it's possible to succeed from here--
@@ -482,8 +482,8 @@ def mcas(mc, items):
   Args:
     mc: memcache client
     items: iterable of (key, current_value, new_value) tuples.  Each item must
-    have been already loaded into the client via gets(), with current_value
-    corresponding to that loaded version.
+      have been already loaded into the client via gets(), with current_value
+      corresponding to that loaded version.
 
   Returns: True if MCAS completed successfully.
 
