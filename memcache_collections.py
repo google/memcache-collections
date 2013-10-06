@@ -380,10 +380,27 @@ class _McasRecord(object):
     return self.REF_SENTINEL + self.uuid
 
   @classmethod
-  def deref(cls, dc, value):
-    """Return MCAS record if given value is a reference, else none."""
+  def deref(cls, dc, value, last_missing_value):
+    """Return MCAS record if given value is a reference, else None.
+
+    If the value is a reference, and the memcache entry for the MCAS
+    record cannot be found, then last_missing_value comes into play.
+    If value == last_missing_value then surface the NodeNotFoundError
+    exception.  Otherwise we supress the exception and return
+    is_missing = True.
+
+    Returns: (mcas_record, is_missing)
+    """
+    mcas_record, is_missing = None, False
     if type(value) == str and value.startswith(cls.REF_SENTINEL):
-      return dc.LoadNodeFromUuid(value[len(cls.REF_SENTINEL):])
+      try:
+        mcas_record = dc.LoadNodeFromUuid(value[len(cls.REF_SENTINEL):])
+      except NodeNotFoundError, e:
+        if (value == last_missing_value):
+          raise e
+        else:
+          is_missing = True
+    return mcas_record, is_missing
 
 
 def _explicit_cas(mc, key, value, cas_id):
@@ -411,18 +428,25 @@ def _mcas_help(dc, mcas_record):
       raise _ReleaseMcas  # MCAS already failed or succeeded
     # phase 1: change all locations to reference MCAS record
     for key, cas_id, _, _ in mcas_record.items:
+      # Failing to dereference an MCAS record is an expected race condition,
+      # but is unrecoverable if it happens on the same item consecutively.
+      last_missing_mcas_ref = None
       while True:
         # Note unlike original algorithm, we don't need conditional CAS since
         # memcached doesn't have an ABA issue.
         if _explicit_cas(dc.mc, key, mcas_ref, cas_id):
           break  # next location
+        # TODO(jbelmonte): any scenario where user needs this to be gets()?
         value = dc.mc.get(key)
         if value == mcas_ref:
           break  # someone else succeeded with this location
         else:
-          # TODO(jbelmonte): handle MCAS record gone
-          nested_mcas_record = _McasRecord.deref(dc, value)
-          if nested_mcas_record:
+          nested_mcas_record, is_missing = _McasRecord.deref(dc, value,
+              last_missing_mcas_ref)
+          if is_missing:
+            last_missing_mcas_ref = value
+            continue
+          elif nested_mcas_record:
             _mcas_help(dc, nested_mcas_record)
             # TODO(jbelmonte): Confirm it's possible to succeed from here--
             # I suspect not since the nested MCAS would void our CAS ID.
@@ -457,8 +481,6 @@ def _mcas_help(dc, mcas_record):
 def mcas(mc, items):
   """Multi-item compare-and-set.
 
-  The items must have already been read for CAS via gets().
-
   Synopsis:
     >>> import memcache
     >>> from memcache_collections import mcas
@@ -477,8 +499,6 @@ def mcas(mc, items):
     ...     ('bar', bar, {'prev': 'baz'})])
     True
 
-  Based on "Practical lock-freedom", Keir Fraser, 2004, pp. 30-34.
-
   Args:
     mc: memcache client
     items: iterable of (key, current_value, new_value) tuples.  Each item must
@@ -489,6 +509,13 @@ def mcas(mc, items):
 
   Raises:
     CasIdNotFoundError: if one of the given items was not loaded for CAS
+
+  The items must have already been read for CAS via gets().
+
+  The aggregate size of current and new values for all items must fit within
+  the memcache value limit (typically 1 MB).
+
+  Based on "Practical lock-freedom", Keir Fraser, 2004, pp. 30-34.
   """
   dc = _DequeClient(mc)
   mcas_record = _McasRecord(mc, items)
@@ -509,11 +536,17 @@ def mcas_get(mc, key):
   Returns: value if memcache item exists, else None
   """
   dc = _DequeClient(mc)
+  # Failing to dereference an MCAS record is an expected race condition,
+  # but is unrecoverable if it happens on the same item consecutively.
+  last_missing_mcas_ref = None
   while True:
     value = mc.gets(key)
-    # TODO(jbelmonte): handle MCAS record gone
-    mcas_record = _McasRecord.deref(dc, value)
-    if mcas_record:
+    mcas_record, is_missing = _McasRecord.deref(dc, value,
+        last_missing_mcas_ref)
+    if is_missing:
+      last_missing_mcas_ref = value
+      continue
+    elif mcas_record:
       _mcas_help(dc, mcas_record)
     else:
       return value
