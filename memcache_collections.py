@@ -420,8 +420,18 @@ class _ReleaseMcas(Exception):
   pass
 
 
-def _mcas_help(dc, mcas_record):
-  result_status = _McasStatus.SUCCESSFUL
+def _mcas_help(dc, mcas_record, is_originator=False):
+  """Attempt to take given MCAS transaction to completed state.
+
+  Args:
+    dc: DequeClient helper object
+    mcas_record: existing transaction record, must already be loaded for CAS
+    is_originator: True if caller originated the MCAS operation
+
+  Returns:  True if transaction reached successful state.  This status is
+      returned only in the is_originator case.
+  """
+  result_status = None
   mcas_ref = mcas_record.make_ref()
   try:
     if mcas_record.status != _McasStatus.UNDECIDED:
@@ -451,27 +461,48 @@ def _mcas_help(dc, mcas_record):
             # TODO(jbelmonte): Confirm it's possible to succeed from here--
             # I suspect not since the nested MCAS would void our CAS ID.
           else:
+            result_status = _McasStatus.FAILED
             raise _ReleaseMcas
+    result_status = _McasStatus.SUCCESSFUL
   except _ReleaseMcas:
-    # From our local view we failed, but note it's possible the MCAS record has
-    # already been marked as successful, in which case we'll fail the CAS below.
-    result_status = _McasStatus.FAILED
+    pass
   # phase 2: revert locations or roll them forward to new values
-  dc.Cas(mcas_record, {'status': result_status}, update_on_success=True)
+  if result_status is not None:
+    if not dc.Cas(mcas_record, {'status': result_status},
+        update_on_success=True):
+      # someone else set a terminal status first, so find out what it was
+      try:
+        mcas_record = dc.LoadNodeFromUuid(mcas_record.uuid)
+      except NodeNotFoundError:
+        if is_originator:
+          # This shouldn't happen since only originator is allowed to delete
+          # the MCAS record.
+          raise
+        else:
+          # We're a helping client and can give up.
+          return
   is_success = mcas_record.status == _McasStatus.SUCCESSFUL
   # TODO(jbelmonte): Elide gets by noting when they were already invoked by
   # first phase.
   # TODO(jbelmonte): Use batch get where supported with CAS (App Engine).
-  last_cas_result = False
   for (key, _, current_value, new_value), is_last in \
       _last_iter(mcas_record.items):
     value = dc.mc.gets(key)
     if value == mcas_ref:
       if (dc.mc.cas(key, new_value if is_success else current_value)
           and is_last):
-        # client successfully releasing the last node is responsible for cleanup
-        dc.DeleteNode(mcas_record)
-  return is_success
+        # The client successfully releasing the last node is responsible for
+        # deleting the MCAS record.  However we only allow the originating
+        # client to do this to prevent the race where a helping client
+        # completes phase 2 before originating client exits phase 1, and the
+        # latter wouldn't know the final status.  This compromise can yield
+        # uncollected MCAS records, e.g. if originating client dies.
+        # TODO(jbelmonte): consider an expiration time on MCAS records
+        # TODO(jbelmonte): record stats on how often we don't clean up
+        if is_originator:
+          dc.DeleteNode(mcas_record)
+  if is_originator:
+    return is_success
 
 
 # challenge: say "memcache mcas" quickly five times
@@ -520,7 +551,9 @@ def mcas(mc, items):
   dc = _DequeClient(mc)
   mcas_record = _McasRecord(mc, items)
   dc.SaveNode(mcas_record)
-  return _mcas_help(dc, mcas_record)
+  # very sad that we need to read this back just to get CAS ID
+  dc.mc.gets(mcas_record.uuid)
+  return _mcas_help(dc, mcas_record, is_originator=True)
 
 
 def mcas_get(mc, key):
