@@ -127,9 +127,8 @@ def worker():
       op_time = time.time()
       mcas_keys = r.sample(location_keys, num_locations_per_mcas)
       while True:
-        items = dict((key, mcas_get(mc, key)) for key in mcas_keys)
-        if mcas(mc,
-            ((key, value, value + 1) for (key, value) in items.iteritems())):
+        if mcas(mc, ((item, item.value + 1)
+            for item in (mcas_get(mc, key) for key in mcas_keys))):
           break
         else:
           num_retries += 1
