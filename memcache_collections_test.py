@@ -16,7 +16,8 @@
 
 import collections
 import unittest
-from memcache_collections import deque
+from memcache_collections import deque, mcas, mcas_get
+from uuid import uuid4
 
 __author__ = 'John Belmonte <jbelmonte@google.com>'
 
@@ -40,7 +41,7 @@ def GetMemcacheClient():
     return pylibmc.Client(['127.0.0.1:11211'], behaviors={'cas': True})
 
 
-class dequeTestCase(unittest.TestCase):
+class memcacheCollectionsTestCase(unittest.TestCase):
 
   def setUp(self):
     if IS_APP_ENGINE_STUB:
@@ -90,6 +91,35 @@ class dequeTestCase(unittest.TestCase):
     d1.appendleft(5)
     self.assertEqual(5, d2.pop())
     self.failUnlessRaises(IndexError, d1.popleft)
+
+  def testMcasGet(self):
+    mc = GetMemcacheClient()
+    key = uuid4().hex
+    value = 'foo'
+    self.assertTrue(mc.set(key, value))
+    item = mcas_get(mc, key)
+    self.assertEqual(key, item.key)
+    self.assertEqual(value, item.value)
+    self.assertTrue(mc.set(key, 'bar'))
+    item2 = mcas_get(mc, key)
+    self.assertNotEqual(item.cas_id, item2.cas_id)
+
+  def testMcas(self):
+    mc = GetMemcacheClient()
+    key1, key2 = uuid4().hex, uuid4().hex
+    mc.set_multi({key1: 'foo', key2: 'bar'})
+    item1, item2 = mcas_get(mc, key1), mcas_get(mc, key2)
+    self.assertTrue(mcas(mc, [(item1, 'foo2'), (item2, 'bar2')]))
+    self.assertEqual(mc.get_multi([key1, key2]), {key1: 'foo2', key2: 'bar2'})
+
+  def testMcasFail(self):
+    mc = GetMemcacheClient()
+    key1, key2 = uuid4().hex, uuid4().hex
+    mc.set_multi({key1: 'foo', key2: 'bar'})
+    item1, item2 = mcas_get(mc, key1), mcas_get(mc, key2)
+    mc.set(key2, 'baz')
+    self.assertFalse(mcas(mc, [(item1, 'foo2'), (item2, 'bar2')]))
+    self.assertEqual(mc.get_multi([key1, key2]), {key1: 'foo', key2: 'baz'})
 
 
 if __name__ == '__main__':
