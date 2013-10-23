@@ -21,7 +21,7 @@ from cPickle import loads
 from uuid import uuid4
 
 __author__ = 'John Belmonte <jbelmonte@google.com>'
-__all__ = ['deque', 'mcas', 'mcas_get', 'Item',
+__all__ = ['deque', 'mcas', 'mcas_get', 'Entry',
     'Error', 'NodeNotFoundError', 'SetError']
 
 
@@ -329,8 +329,8 @@ class _McasStatus(object):
   FAILED = 'FAILED'
 
 
-class Item(object):
-  """Represents a memcache item at a certain point in time."""
+class Entry(object):
+  """Represents a memcache entry at a certain point in time."""
 
   def __init__(self, key, value, cas_id):
     self._key = key
@@ -352,7 +352,7 @@ class Item(object):
 
 class _McasRecord(object):
 
-  def __init__(self, mc, items):
+  def __init__(self, mc, entries):
     self.uuid = uuid4().hex
     self.status = _McasStatus.UNDECIDED
     # We need to record CAS ID's, because helpers won't necessarily have
@@ -368,8 +368,8 @@ class _McasRecord(object):
     # prohibitive it's feasible to store values separately.
     #
     # The MCAS algorithm depends on items being sorted by key.
-    self.items = sorted((item.key, item.value, item.cas_id, new_value) for
-        item, new_value in items)
+    self.items = sorted((entry.key, entry.value, entry.cas_id, new_value) for
+        entry, new_value in entries)
 
   def __getstate__(self):
     # No need to store UUID as it's the key.  Unpickling party must restore it.
@@ -460,7 +460,7 @@ def _mcas_help(dc, mcas_record, is_originator=False):
     # phase 1: change all locations to reference MCAS record
     for key, _, cas_id, _ in mcas_record.items:
       # Failing to dereference an MCAS record is an expected race condition,
-      # but is unrecoverable if it happens on the same item consecutively.
+      # but is unrecoverable if it happens on the same entry consecutively.
       last_missing_mcas_ref = None
       while True:
         # Note unlike original algorithm, we don't need conditional CAS since
@@ -528,8 +528,8 @@ def _mcas_help(dc, mcas_record, is_originator=False):
 # challenge: say "memcache mcas" quickly five times
 # TODO(jbelmonte): support mcas across multiple clients
 # TODO(jbelmonte): translate NodeNotFoundError
-def mcas(mc, items):
-  """Multi-item compare-and-set.
+def mcas(mc, entries):
+  """Multi-entry compare-and-set.
 
   Synopsis:
     >>> import memcache
@@ -539,34 +539,34 @@ def mcas(mc, items):
     ...     'foo': {'next': 'bar'},
     ...     'bar': {'prev': 'foo'}})
     []
-    >>> # always use mcas_get to access items potentially in MCAS operations
-    >>> # (each call returns an object representing a memcache item snapshot)
-    >>> foo_item, bar_item = mcas_get(mc, 'foo'), mcas_get(mc, 'bar')
-    >>> foo_item.key, foo_item.value
+    >>> # always use mcas_get to access entries potentially in MCAS operations
+    >>> # (each call returns an object representing a memcache entry snapshot)
+    >>> foo_entry, bar_entry = mcas_get(mc, 'foo'), mcas_get(mc, 'bar')
+    >>> foo_entry.key, foo_entry.value
     ('foo', {'next': 'bar'})
     >>> # atomically insert new node in our doubly linked list via MCAS
     >>> mc.set('baz', {'prev': 'foo', 'next': 'bar'})
     True
     >>> mcas(mc, [
-    ...     (foo_item, {'next': 'baz'}),
-    ...     (bar_item, {'prev': 'baz'})])
+    ...     (foo_entry, {'next': 'baz'}),
+    ...     (bar_entry, {'prev': 'baz'})])
     True
 
   Function is not thread safe due to implicit CAS ID handling of the Python API.
 
   Args:
     mc: memcache client
-    items: iterable of (Item, new_value) tuples
+    entries: iterable of (Entry, new_value) tuples
 
   Returns: True if MCAS completed successfully.
 
-  The aggregate size of current and new values for all items must fit within
+  The aggregate size of current and new values for all entries must fit within
   the memcache value limit (typically 1 MB).
 
   Based on "Practical lock-freedom", Keir Fraser, 2004, pp. 30-34.
   """
   dc = _DequeClient(mc)
-  mcas_record = _McasRecord(mc, items)
+  mcas_record = _McasRecord(mc, entries)
   dc.SaveNode(mcas_record)
   # very sad that we need to read this back just to get CAS ID
   dc.mc.gets(mcas_record.uuid)
@@ -581,13 +581,13 @@ def mcas_get(mc, key):
 
   Args:
     mc: memcache client
-    key: memcache item key
+    key: memcache entry key
 
-  Returns: Item object if memcache entry exists, else None
+  Returns: Entry object if memcache entry exists, else None
   """
   dc = _DequeClient(mc)
   # Failing to dereference an MCAS record is an expected race condition,
-  # but is unrecoverable if it happens on the same item consecutively.
+  # but is unrecoverable if it happens on the same entry consecutively.
   last_missing_mcas_ref = None
   while True:
     value = mc.gets(key)
@@ -600,4 +600,4 @@ def mcas_get(mc, key):
     elif mcas_record:
       _mcas_help(dc, mcas_record)
     else:
-      return Item(key, value, cas_id)
+      return Entry(key, value, cas_id)
