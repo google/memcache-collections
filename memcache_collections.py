@@ -414,16 +414,26 @@ class _McasRecord(object):
     return mcas_record, is_missing
 
 
+def _get_cas_ids(mc):
+    """Get implementation-specific CAS ID dictionary."""
+    # TODO(jbelmonte): pluggable CAS ID access
+    cas_ids = getattr(mc, 'cas_ids', None)  # python-memcached client
+    if cas_ids == None:
+      cas_ids = getattr(mc, '_cas_ids', None)  # App Engine
+    assert cas_ids != None, 'Explicit CAS not supported for memcache client'
+    return cas_ids
+
+
 def _explicit_cas(mc, key, value, cas_id):
     """Perform CAS given explicit unique ID."""
-    # TODO(jbelmonte): pluggable "CAS ID injector"
-    original_id = mc.cas_ids.get(key)
-    mc.cas_ids[key] = cas_id
+    cas_ids = _get_cas_ids(mc)
+    original_id = cas_ids.get(key)
+    cas_ids[key] = cas_id
     result = mc.cas(key, value)
     if original_id == None:
-      del mc.cas_ids[key]
+      del cas_ids[key]
     else:
-      mc.cas_ids[key] = original_id
+      cas_ids[key] = original_id
     return result
 
 
@@ -581,8 +591,7 @@ def mcas_get(mc, key):
   last_missing_mcas_ref = None
   while True:
     value = mc.gets(key)
-    # TODO(jbelmonte): pluggable "CAS ID extractor"
-    cas_id = None if value is None else mc.cas_ids.get(key)
+    cas_id = None if value is None else _get_cas_ids(mc)[key]
     mcas_record, is_missing = _McasRecord.deref(dc, value,
         last_missing_mcas_ref)
     if is_missing:
