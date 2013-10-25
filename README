@@ -37,7 +37,7 @@ Synopsis:
     'hello'
 
 
-2) Lock-free multi-entry compare and set (MCAS)
+2) Lock-free, multi-entry compare and set (MCAS)
 
 Like memcache's native operation, this provides atomic compare-and-set-- except
 it works atomically across any number of entries.  The catch is you have to

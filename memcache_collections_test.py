@@ -54,7 +54,7 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     if IS_APP_ENGINE_STUB:
       self.testbed.deactivate()
 
-  def baseTest(self, d):
+  def baseQueueTest(self, d):
     self.failUnlessRaises(IndexError, d.popleft)
     self.failUnlessRaises(IndexError, d.pop)
     d.appendleft(5)
@@ -66,7 +66,7 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     self.failUnlessRaises(IndexError, d.popleft)
 
   def testInMemoryDeque(self):
-    self.baseTest(collections.deque())
+    self.baseQueueTest(collections.deque())
 
   def testDeque(self):
     # TODO: use a mock or stub memcache client
@@ -74,7 +74,7 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     # cases of the lock-free algorithm.  Current test passes even when CAS is
     # ignored...
     mc = GetMemcacheClient()
-    self.baseTest(deque.create(mc))
+    self.baseQueueTest(deque.create(mc))
 
     # test create and bind
     d1 = deque.create(mc)
