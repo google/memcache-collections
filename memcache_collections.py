@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Concurrent, distributed data structures on memcache."""
+"""Concurrent, distributed data structures on memcache.
+
+Main items in this module:
+
+   deque:  a lock-free, double-ended queue
+   mcas, mcas_get:  lock-free, multi-entry compare and set
+"""
 
 import copy
 import threading
@@ -36,8 +42,8 @@ class NodeNotFoundError(Error):
 
 
 class SetError(Error):
-  """Memcache set operation failed-- indicates server unavailable (or full, if
-  evicitons are disabled)."""
+  """Memcache set operation failed-- indicates server unavailable (or full,
+  if evicitons are disabled)."""
   pass
 
 
@@ -124,23 +130,6 @@ class deque(object):
   This interface is modeled after collections.deque.  Only append and pop
   operations are supported (no length, iteration, clear, etc.).
 
-  The implementation assumes that memcache CAS does not suffer from the
-  "A->B->A" problem (valid at least for memcached).
-
-  Important note regarding CAS ID management: the Python memcache API
-  unfortunately requires client implementations to hold on to CAS ID's
-  indefinitely.  This is problematic for our use case since the number of
-  memcache entries using CAS is unbounded.  As a consequence, deque users are
-  responsible for managing CAS ID lifetime, for example by calling reset_cas()
-  on the given memcache client at appropriate times, and perhaps dedicating a
-  memcache client instance soley for use by our collections.  As far as this
-  API is concerned, it's safe to call reset_cas() outside of any public method.
-
-  This class is thread safe assuming that the given memcache client is.
-
-  Based on "CAS-Based Lock-Free Algorithm for Shared Deques", Maged M. Michael,
-  2003, http://www.cs.bgu.ac.il/~mpam092/wiki.files/michael-dequeues.pdf.
-
   Synopsis:
 
     >>> import memcache
@@ -161,6 +150,72 @@ class deque(object):
     Traceback (most recent call last):
         ...
     IndexError
+
+  This class is thread safe assuming that the given memcache client is.
+
+
+  CAVEATS
+
+  Low durability - the collection will be corrupted on loss of any
+  underlying memcache entry (e.g. from evictions or memcache server
+  restart).  The corruption state is detectable and reported by the
+  client library.
+
+  Due to the eviction issue, mixing these collections with other classes
+  of data in the same memcache instance is problematic (i.e. less
+  important items may corrupt the data structure).  You probably
+  want to dedicate a memcache instance to hold fragile data such as these
+  collections and manage it so as to not reach the full state.  The
+  memcached server has an option to disable evictions (-M) which can help
+  in ensuring the system is healthy.
+
+  Regarding CAS ID management, the Python memcache API unfortunately
+  requires client implementations to hold on to CAS ID's indefinitely.
+  This is problematic for our use case since the number of memcache
+  entries using CAS is unbounded.  As a consequence, deque users are
+  responsible for managing CAS ID lifetime, for example by calling
+  reset_cas() on the given memcache client at appropriate times, and
+  perhaps dedicating a memcache client instance soley for use by our
+  collections.  As far as this API is concerned, it's safe to call
+  reset_cas() outside of any public method.
+
+
+  PERFORMANCE NOTES
+
+  Very roughly I've seen the deque reach contention limits at ~400
+  combined read+write operations/s on a slow laptop and ~1,200 ops/s on
+  a decent workstation given small values and the pure Python memcached
+  client talking to memcached on the same machine via TCP.
+
+  In applications where exact item ordering is not important, higher
+  operation rates can be achieved by application-level sharding to
+  multiple deque instances.
+
+
+  IMPLEMENTATION NOTES
+
+  Based on "CAS-Based Lock-Free Algorithm for Shared Deques",
+  Maged M. Michael, 2003,
+  http://www.cs.bgu.ac.il/~mpam092/wiki.files/michael-dequeues.pdf.
+
+  This was the simplest (correct) lock-free algorithm I could find, which
+  not surprisingly doesn't allow disjoint access of each queue end.
+  Algorithms supporting disjoint access redily exist, such as presented
+  in "Lock-Free and Practical Doubly Linked List-Based Deques Using
+  Single-Word Compare-and-Swap", Sundell and Tsigas, 2005.  This would
+  effectively halve the contention rate when the deque is used as a FIFO,
+  but at a considerable complexity cost.
+
+  I'm aware of simple lock-free queue and list implementations which
+  attempt to employ memcache's atomic increment operation to generate
+  node addresses. However they all seem to suffer from unhandled race
+  conditions and it's not obvious to me there is a fix.  Increment can be
+  used as a locking mechanism, however.  A locking approach may be more
+  fair to clients relative to CAS over a network, but introduces its own
+  complexities in needing to address client deaths, deadlocks, etc.
+
+  The implementation assumes that memcache CAS does not suffer from the
+  "A->B->A" problem (valid at least for memcached).
   """
 
   def __init__(self, deque_client, uuid):
@@ -178,7 +233,8 @@ class deque(object):
 
   @classmethod
   def create(cls, memcache_client, name=None):
-    """Create new collection in memcache, optionally with given unique name."""
+    """Create a new collection in memcache, optionally with given unique
+    name."""
     client = _DequeClient(memcache_client)
     # TODO(jbelmonte): create _Anchor class derived from _Node w/util methods
     # TODO(jbelmonte): track deque length
@@ -214,8 +270,8 @@ class deque(object):
   def _Stabilize(self, anchor, last=None):
     """Make deque coherent if necessary and transition to stable state.
 
-    An incoherent deque will require that the penultimate node be adjusted to
-    point to the last node.
+    An incoherent deque will require that the penultimate node be adjusted
+    to point to the last node.
 
     We silently cede upon any detected race, as that provably implies the
     deque reached the stable state by another process.
@@ -303,13 +359,13 @@ class deque(object):
     return node.value
 
   def pop(self):
-    """Remove and return an element from the right side of the queue.  If no
-    elements are present, raises an IndexError."""
+    """Remove and return an element from the right side of the queue.  If
+    no elements are present, raises an IndexError."""
     return self._PopCommon(is_right=True)
 
   def popleft(self):
-    """Remove and return an element from the left side of the queue.  If no
-    elements are present, raises an IndexError."""
+    """Remove and return an element from the left side of the queue.  If
+    no elements are present, raises an IndexError."""
     return self._PopCommon(is_right=False)
 
 
@@ -535,12 +591,14 @@ def mcas(mc, entries):
     >>> import memcache
     >>> from memcache_collections import mcas
     >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
+    >>> # initialize a doubly-linked list with two elements
     >>> mc.set_multi({
     ...     'foo': {'next': 'bar'},
     ...     'bar': {'prev': 'foo'}})
     []
-    >>> # always use mcas_get to access entries potentially in MCAS operations
-    >>> # (each call returns an object representing a memcache entry snapshot)
+    >>> # Always use mcas_get to access entries potentially in MCAS
+    >>> # operations.  It returs an object representing a memcache entry
+    >>> # snapshot.
     >>> foo_entry, bar_entry = mcas_get(mc, 'foo'), mcas_get(mc, 'bar')
     >>> foo_entry.key, foo_entry.value
     ('foo', {'next': 'bar'})
@@ -552,7 +610,8 @@ def mcas(mc, entries):
     ...     (bar_entry, {'prev': 'baz'})])
     True
 
-  Function is not thread safe due to implicit CAS ID handling of the Python API.
+  Function is not thread safe due to implicit CAS ID handling of the
+  Python API.
 
   Args:
     mc: memcache client
@@ -560,8 +619,8 @@ def mcas(mc, entries):
 
   Returns: True if MCAS completed successfully.
 
-  The aggregate size of current and new values for all entries must fit within
-  the memcache value limit (typically 1 MB).
+  The aggregate size of current and new values for all entries must fit
+  within the memcache value limit (typically 1 MB).
 
   Based on "Practical lock-freedom", Keir Fraser, 2004, pp. 30-34.
   """
@@ -577,7 +636,8 @@ def mcas(mc, entries):
 def mcas_get(mc, key):
   """Safely read a memcache entry which may be involved in MCAS operations.
 
-  Function is not thread safe due to implicit CAS ID handling of the Python API.
+  Function is not thread safe due to implicit CAS ID handling of the
+  Python API.
 
   Args:
     mc: memcache client
