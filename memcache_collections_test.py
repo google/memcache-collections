@@ -19,7 +19,7 @@ import unittest
 from memcache_collections import deque, mcas, mcas_get
 from uuid import uuid4
 
-__author__ = 'John Belmonte <jbelmonte@google.com>'
+__author__ = 'John Belmonte <john@neggie.net>'
 
 IS_APP_ENGINE = False
 IS_APP_ENGINE_STUB = False
@@ -69,8 +69,8 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     self.baseTest(collections.deque())
 
   def testDeque(self):
-    # TODO(jbelmonte): use a mock or stub memcache client
-    # TODO(jbelmonte): Write serious unit test which covers all concurrency
+    # TODO: use a mock or stub memcache client
+    # TODO: Write serious unit test which covers all concurrency
     # cases of the lock-free algorithm.  Current test passes even when CAS is
     # ignored...
     mc = GetMemcacheClient()

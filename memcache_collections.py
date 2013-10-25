@@ -26,7 +26,7 @@ from cPickle import dumps
 from cPickle import loads
 from uuid import uuid4
 
-__author__ = 'John Belmonte <jbelmonte@google.com>'
+__author__ = 'John Belmonte <john@neggie.net>'
 __all__ = ['deque', 'mcas', 'mcas_get', 'Entry',
     'Error', 'NodeNotFoundError', 'SetError']
 
@@ -75,7 +75,7 @@ class _DequeClient:
     self.mc = memcache_client
 
   def SaveNode(self, node):
-    # TODO(jbelmonte): Use protocol buffers or JSON for serialization so that
+    # TODO: Use protocol buffers or JSON for serialization so that
     # schema is language independent.
     if not self.mc.set(node.uuid, dumps(node)):
       raise SetError
@@ -108,7 +108,7 @@ class _DequeClient:
     new_node.uuid = node.uuid
     new_node.__dict__.update(attributes)
     result = self.mc.cas(node.uuid, dumps(new_node))
-    # TODO(jbelmonte): pluggable "CAS ID deleter" to avoid unbounded memory use
+    # TODO: pluggable "CAS ID deleter" to avoid unbounded memory use
     if result and update_on_success:
       node.__dict__.update(attributes)
     return result
@@ -236,8 +236,8 @@ class deque(object):
     """Create a new collection in memcache, optionally with given unique
     name."""
     client = _DequeClient(memcache_client)
-    # TODO(jbelmonte): create _Anchor class derived from _Node w/util methods
-    # TODO(jbelmonte): track deque length
+    # TODO: create _Anchor class derived from _Node w/util methods
+    # TODO: track deque length
     anchor = _Node(name)
     anchor.value = _Status.STABLE
     client.SaveNode(anchor)
@@ -306,7 +306,7 @@ class deque(object):
   def _PushCommon(self, value, target_status):
     node = _Node()
     node.value = value
-    # TODO(jbelmonte): track success rate
+    # TODO: track success rate
     while True:
       anchor = self.client.LoadNodeFromUuid(self.anchor_uuid)
       if anchor.next_uuid is None:  # empty queue
@@ -354,7 +354,7 @@ class deque(object):
           {'prev_uuid': None, 'next_uuid': None} if is_single_item
           else {link: getattr(node, reverse_link)}):
         break
-    # TODO(jbelmonte): async delete if supported
+    # TODO: async delete if supported
     self.client.DeleteNode(node)
     return node.value
 
@@ -472,7 +472,7 @@ class _McasRecord(object):
 
 def _get_cas_ids(mc):
     """Get implementation-specific CAS ID dictionary."""
-    # TODO(jbelmonte): pluggable CAS ID access
+    # TODO: pluggable CAS ID access
     cas_ids = getattr(mc, 'cas_ids', None)  # python-memcached client
     if cas_ids == None:
       cas_ids = getattr(mc, '_cas_ids', None)  # App Engine
@@ -523,7 +523,7 @@ def _mcas_help(dc, mcas_record, is_originator=False):
         # memcached doesn't have an ABA issue.
         if _explicit_cas(dc.mc, key, mcas_ref, cas_id):
           break  # next location
-        # TODO(jbelmonte): any scenario where user needs this to be gets()?
+        # TODO: any scenario where user needs this to be gets()?
         location = dc.mc.get(key)
         if location == mcas_ref:
           break  # someone else succeeded with this location
@@ -535,7 +535,7 @@ def _mcas_help(dc, mcas_record, is_originator=False):
             continue
           elif nested_mcas_record:
             _mcas_help(dc, nested_mcas_record)
-            # TODO(jbelmonte): Confirm it's possible to succeed from here--
+            # TODO: Confirm it's possible to succeed from here--
             # I suspect not since the nested MCAS would void our CAS ID.
           else:
             result_status = _McasStatus.FAILED
@@ -560,9 +560,9 @@ def _mcas_help(dc, mcas_record, is_originator=False):
           return
   is_success = mcas_record.status == _McasStatus.SUCCESSFUL
   # phase 2: revert locations or roll them forward to new values
-  # TODO(jbelmonte): Elide gets by noting when they were already invoked by
+  # TODO: Elide gets by noting when they were already invoked by
   # first phase.
-  # TODO(jbelmonte): Use batch get where supported with CAS (App Engine).
+  # TODO: Use batch get where supported with CAS (App Engine).
   for (key, value, _, new_value), is_last in _last_iter(mcas_record.items):
     location = dc.mc.gets(key)
     if location == mcas_ref:
@@ -573,8 +573,8 @@ def _mcas_help(dc, mcas_record, is_originator=False):
         # completes phase 2 before originating client exits phase 1, and the
         # latter wouldn't know the final status.  This compromise can yield
         # uncollected MCAS records, e.g. if originating client dies.
-        # TODO(jbelmonte): consider an expiration time on MCAS records
-        # TODO(jbelmonte): record stats on how often we don't clean up
+        # TODO: consider an expiration time on MCAS records
+        # TODO: record stats on how often we don't clean up
         if is_originator:
           dc.DeleteNode(mcas_record)
   if is_originator:
@@ -582,8 +582,8 @@ def _mcas_help(dc, mcas_record, is_originator=False):
 
 
 # challenge: say "memcache mcas" quickly five times
-# TODO(jbelmonte): support mcas across multiple clients
-# TODO(jbelmonte): translate NodeNotFoundError
+# TODO: support mcas across multiple clients
+# TODO: translate NodeNotFoundError
 def mcas(mc, entries):
   """Multi-entry compare-and-set.
 
@@ -632,7 +632,7 @@ def mcas(mc, entries):
   return _mcas_help(dc, mcas_record, is_originator=True)
 
 
-# TODO(jbelmonte): mcas_get_multi
+# TODO: mcas_get_multi
 def mcas_get(mc, key):
   """Safely read a memcache entry which may be involved in MCAS operations.
 

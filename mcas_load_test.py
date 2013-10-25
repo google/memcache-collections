@@ -40,9 +40,9 @@ import time
 
 from memcache_collections import mcas, mcas_get
 
-__author__ = 'John Belmonte <jbelmonte@google.com>'
+__author__ = 'John Belmonte <john@neggie.net>'
 
-# TODO(jbelmonte): take manager address, other params from the command line
+# TODO: take manager address, other params from the command line
 CONTROL_PORT = 50000
 CONTROL_KEY = b'abc'
 COMMAND_QUEUE = 'workers'
@@ -68,7 +68,7 @@ class ManagerProcess(Process):
     super(ManagerProcess, self).__init__()
 
   def run(self):
-    # TODO(jbelmonte): launch a private memcached server for the load test
+    # TODO: launch a private memcached server for the load test
     mc = GetMemcacheClient(MEMCACHE_HOSTS)
     location_keys = [uuid4().hex for _ in range(NUM_LOCATIONS_TOTAL)]
     mc.set_multi(dict((key, 0) for key in location_keys))
@@ -91,7 +91,7 @@ class ManagerProcess(Process):
           expected_count, actual_count)
     finally:
       mc.delete_multi(location_keys)
-    # TODO(jbelmonte): how to exit the process?
+    # TODO: how to exit the process?
 
 
 def manager():

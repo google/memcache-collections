@@ -33,9 +33,9 @@ import time
 
 from memcache_collections import deque
 
-__author__ = 'John Belmonte <jbelmonte@google.com>'
+__author__ = 'John Belmonte <john@neggie.net>'
 
-# TODO(jbelmonte): take manager address, other params from the command line
+# TODO: take manager address, other params from the command line
 CONTROL_PORT =  50000
 CONTROL_KEY = b'abc'
 WRITER_QUEUE = 'writers'
@@ -66,10 +66,10 @@ class ManagerProcess(Process):
 
   def run(self):
     memcache_queue_name = uuid4().hex
-    # TODO(jbelmonte): launch a private memcached server for the load test
+    # TODO: launch a private memcached server for the load test
     mc = GetMemcacheClient(MEMCACHE_HOSTS)
     deque.create(mc, memcache_queue_name)
-    # TODO(jbelmonte): graceful end of test; end-to-end checksum
+    # TODO: graceful end of test; end-to-end checksum
     for i in range(100):
       self.q.put({
           'servers': MEMCACHE_HOSTS,
