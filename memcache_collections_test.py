@@ -16,42 +16,56 @@
 
 import collections
 import unittest
-from memcache_collections import deque, mcas, mcas_get
+from memcache_collections import deque, mcas, mcas_get, AddError
 from uuid import uuid4
 
 __author__ = 'John Belmonte <john@neggie.net>'
 
-IS_APP_ENGINE = False
-IS_APP_ENGINE_STUB = False
+
+class Client:
+  MOCKCACHE = 1
+  PYTHON_MEMCACHED = 2
+  PYLIBMC = 3
+  APP_ENGINE = 4
+  APP_ENGINE_MOCK = 5
+
+# Note that tests expect a pristine, isolated memcache evironment.  Therefore
+# only the mock client options are expected to pass deterministically.
+_client = Client.MOCKCACHE
 
 
 def GetMemcacheClient():
-  if IS_APP_ENGINE:
+  if _client in (Client.APP_ENGINE, Client.APP_ENGINE_MOCK):
     from google.appengine.api import memcache
     return memcache.Client()
-  elif True:
+  elif _client == Client.PYTHON_MEMCACHED:
     import memcache
     # Anyone else bothered by this client having all cas calls return success
     # when CAS support is disabled (i.e. cache_cas=False, the default)!?
     return memcache.Client(['127.0.0.1:11211'], cache_cas=True)
-  else:
+  elif _client == Client.MOCKCACHE:
+    import mockcache
+    return mockcache.Client(['127.0.0.1:11211'], cache_cas=True)
+  elif _client == Client.PYLIBMC:
     # pylibmc is buggy, yields:
     # "*** glibc detected *** python: double free or corruption"
     import pylibmc
     return pylibmc.Client(['127.0.0.1:11211'], behaviors={'cas': True})
+  else:
+    raise AssertionError('unknown client type')
 
 
 class memcacheCollectionsTestCase(unittest.TestCase):
 
   def setUp(self):
-    if IS_APP_ENGINE_STUB:
+    if _client == Client.APP_ENGINE_MOCK:
       from google.appengine.ext import testbed
       self.testbed = testbed.Testbed()
       self.testbed.activate()
       self.testbed.init_memcache_stub()
 
   def tearDown(self):
-    if IS_APP_ENGINE_STUB:
+    if _client == Client.APP_ENGINE_MOCK:
       self.testbed.deactivate()
 
   def baseQueueTest(self, d):
@@ -69,7 +83,6 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     self.baseQueueTest(collections.deque())
 
   def testDeque(self):
-    # TODO: use a mock or stub memcache client
     # TODO: Write serious unit test which covers all concurrency
     # cases of the lock-free algorithm.  Current test passes even when CAS is
     # ignored...
@@ -86,6 +99,7 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     # test named create and bind
     name = 'foo'
     d1 = deque.create(mc, name)
+    self.failUnlessRaises(AddError, deque.create, mc, name)
     d2 = deque.bind(mc, name)
     self.assertEqual(name, d1.name)
     d1.appendleft(5)

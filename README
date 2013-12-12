@@ -61,7 +61,7 @@ Synopsis:
     >>> foo_entry.key, foo_entry.value
     ('foo', {'next': 'bar'})
     >>> # atomically insert new node in our doubly linked list via MCAS
-    >>> mc.set('baz', {'prev': 'foo', 'next': 'bar'})
+    >>> mc.add('baz', {'prev': 'foo', 'next': 'bar'})
     >>> mcas(mc, [
     ...     (foo_entry, {'next': 'baz'}),
     ...     (bar_entry, {'prev': 'baz'})])
@@ -92,10 +92,13 @@ management.  As for Python, I'm attempting to work with owners of the Python
 memcache clients to improve the API.
 
 
-DISCLAIMER
+DISCLAIMERS
 
 Although Google, Inc. holds the copyright, memcache-collections is not a
 Google product.
+
+The included mockcache.py is derived from work by Hong MinHee, with various
+paches for set_multi (Tony Bajan) and CAS support.
 
 
 CONTRIBUTIONS
