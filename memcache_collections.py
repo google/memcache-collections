@@ -22,8 +22,6 @@ Main items in this module:
 
 import copy
 import threading
-from cPickle import dumps
-from cPickle import loads
 from uuid import uuid4
 
 __author__ = 'John Belmonte <john@neggie.net>'
@@ -82,21 +80,20 @@ class _DequeClient:
   def SaveNode(self, node):
     # TODO: Use protocol buffers or JSON for serialization so that
     # schema is language independent.
-    if not self.mc.set(node.uuid, dumps(node)):
+    if not self.mc.set(node.uuid, node):
       raise SetError
 
   def AddNode(self, node):
-    if not self.mc.add(node.uuid, dumps(node)):
+    if not self.mc.add(node.uuid, node):
       raise AddError
 
   def DeleteNode(self, node):
     self.mc.delete(node.uuid)
 
   def LoadNodeFromUuid(self, uuid):
-    value = self.mc.gets(uuid)
-    if value is None:
+    node = self.mc.gets(uuid)
+    if node is None:
       raise NodeNotFoundError
-    node = loads(value)
     node.uuid = uuid
     return node
 
@@ -116,7 +113,7 @@ class _DequeClient:
     # restore UUID since it's excluded from serialization, which affects copy
     new_node.uuid = node.uuid
     new_node.__dict__.update(attributes)
-    result = self.mc.cas(node.uuid, dumps(new_node))
+    result = self.mc.cas(node.uuid, new_node)
     # TODO: pluggable "CAS ID deleter" to avoid unbounded memory use
     if result and update_on_success:
       node.__dict__.update(attributes)
