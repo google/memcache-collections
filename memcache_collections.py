@@ -712,11 +712,10 @@ class skiplist(object):
   Based on "Practical lock-freedom", Keir Fraser, 2004, p. 55.
   """
 
-  def __init__(self, deque_client, head_uuid, tail_uuid):
+  def __init__(self, deque_client, head_uuid):
     """For internal use only.  Use create() or bind()."""
     self.client = deque_client
     self.head_uuid = head_uuid
-    self.tail_uuid = tail_uuid
 
   @classmethod
   def create(cls, memcache_client, name=None, num_levels=14):
@@ -728,12 +727,10 @@ class skiplist(object):
     Raises AddError if the named collection already exists.
     """
     client = _DequeClient(memcache_client)
-    tail = _SkiplistNode()
-    client.AddNode(tail)
     head = _SkiplistNode(name)
-    head.next = [tail.uuid, ] * num_levels
+    head.next = [None, ] * num_levels
     client.AddNode(head)
-    return cls(client, head.uuid, tail.uuid)
+    return cls(client, head.uuid)
 
   @classmethod
   def bind(cls, memcache_client, name):
@@ -759,7 +756,9 @@ class skiplist(object):
       while True:
         next_uuid = node.value.next[i]
         # print next_uuid
-        if next_uuid in visited_nodes:
+        if next_uuid is None:
+          next_node = None
+        elif next_uuid in visited_nodes:
           next_node = visited_nodes[next_uuid]
         else:
           next_node = mcas_get(self.client.mc, next_uuid)
@@ -767,7 +766,7 @@ class skiplist(object):
             # TODO: retry, tolerate lost nodes
             raise NodeNotFoundError
           visited_nodes[next_uuid] = next_node
-        if next_node.key == self.tail_uuid or next_node.value.value >= value:
+        if next_node is None or next_node.value.value >= value:
           break
         #c[i] += 1
         node = next_node
@@ -784,7 +783,8 @@ class skiplist(object):
     while True:
       left_nodes, right_nodes = self.search(value)
       levels = _rand_level(len(left_nodes)) + 1
-      node.next = [right_node.key for right_node in right_nodes[:levels]]
+      node.next = [None if right_node is None else right_node.key
+                   for right_node in right_nodes[:levels]]
       self.client.SaveNode(node)
       #print '**', node.uuid, node.next
       left_nodes = left_nodes[:levels]
@@ -800,7 +800,7 @@ class skiplist(object):
 
   def contains(self, value):
     _, right_nodes = self.search(value)
-    return right_nodes and right_nodes[0].value.value == value
+    return right_nodes[0] and right_nodes[0].value.value == value
 
 
 def test():
