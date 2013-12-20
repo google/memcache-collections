@@ -19,7 +19,7 @@
 We start with N memcache entries containing the value 0.  Then perform
 concurrent MCAS operations (retrying as needed) on M locations at a time,
 incrementing each location.  Finally sum all locations.  The total count should
-equal the number of operations times M.  Contention can be controlled by
+equal the number of iterations times M.  Contention can be controlled by
 adjusting N, M, and the number MCAS operations running in parallel.
 
 Run "deque_load_test.py manager" in one shell, then any number of
