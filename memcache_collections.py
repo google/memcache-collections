@@ -22,10 +22,12 @@ Main items in this module:
 
 import copy
 import threading
+from collections import Counter
+from random import randrange
 from uuid import uuid4
 
 __author__ = 'John Belmonte <john@neggie.net>'
-__all__ = ['deque', 'mcas', 'mcas_get', 'Entry',
+__all__ = ['deque', 'mcas', 'mcas_get', 'skiplist', 'Entry',
     'Error', 'NodeNotFoundError', 'SetError']
 
 
@@ -670,6 +672,135 @@ def mcas_get(mc, key):
       _mcas_help(dc, mcas_record)
     else:
       return Entry(key, value, cas_id)
+
+
+class _SkiplistNode(object):
+
+  def __init__(self, uuid=None):
+    self.uuid = uuid or uuid4().hex
+    self.value = None
+    self.next = None
+
+  def __getstate__(self):
+    # No need to store UUID as it's the key.  Unpickling party must restore it.
+    state = self.__dict__.copy()
+    state.pop('uuid', None)
+    return state
+
+  def __eq__(self, other):
+    return type(self) == type(other) and self.__dict__ == other.__dict__
+
+  def __ne__(self, other):
+    return type(self) != type(other) or self.__dict__ != other.__dict__
+
+
+def _rand_level(max):
+  x = randrange(0, 2**max - 1)
+  for i in xrange(max):
+    if x & 1 << i == 0:
+      return i
+
+
+class skiplist(object):
+  """Lock-free skiplist on memcache.
+
+  This is a simple multiset of values featuring O(log N)
+  find-k-th-largest-element.  [[Insert operations, which are also O(log N),
+  yield an approximate insertion index k.  This can be used to persist a
+  running percentile to another storage in an efficient, event driven manner.]]
+
+  Based on "Practical lock-freedom", Keir Fraser, 2004, p. 55.
+  """
+
+  def __init__(self, deque_client, head_uuid, tail_uuid):
+    """For internal use only.  Use create() or bind()."""
+    self.client = deque_client
+    self.head_uuid = head_uuid
+    self.tail_uuid = tail_uuid
+
+  @classmethod
+  def create(cls, memcache_client, name=None, num_levels=14):
+    """Create a new collection in memcache.
+
+    If optional name is given, it will be used verbatim as the key for the
+    root entry of the collection.
+
+    Raises AddError if the named collection already exists.
+    """
+    client = _DequeClient(memcache_client)
+    tail = _SkiplistNode()
+    client.AddNode(tail)
+    head = _SkiplistNode(name)
+    head.next = [tail.uuid, ] * num_levels
+    client.AddNode(head)
+    return cls(client, head.uuid, tail.uuid)
+
+  @classmethod
+  def bind(cls, memcache_client, name):
+    """Bind to an existing collection in memcache."""
+    return cls(_DequeClient(memcache_client), name)
+
+  @property
+  def name(self):
+    """Returns the unique name of this collection instance."""
+    return self.anchor_uuid
+
+  def search(self, value):
+    left_nodes, right_nodes = [], []
+    node = mcas_get(self.client.mc, self.head_uuid)
+    if node is None:
+      raise NodeNotFoundError
+    next_node = None
+    visited_nodes = {}
+    c = Counter()
+    #print len(node.value.next), self.tail_uuid
+    for i in reversed(range(len(node.value.next))):
+      #print i
+      while True:
+        next_uuid = node.value.next[i]
+        # print next_uuid
+        if next_uuid in visited_nodes:
+          next_node = visited_nodes[next_uuid]
+        else:
+          next_node = mcas_get(self.client.mc, next_uuid)
+          if next_node is None:
+            # TODO: retry, tolerate lost nodes
+            raise NodeNotFoundError
+          visited_nodes[next_uuid] = next_node
+        if next_node.key == self.tail_uuid or next_node.value.value >= value:
+          break
+        #c[i] += 1
+        node = next_node
+        #print 'advanced to', node.key
+      left_nodes.append(node)
+      right_nodes.append(next_node)
+    #print 'search for %s visited %d nodes' % (value, len(visited_nodes))
+    #print c
+    return list(reversed(left_nodes)), list(reversed(right_nodes))
+
+  def insert(self, value):
+    node = _SkiplistNode()
+    node.value = value
+    while True:
+      left_nodes, right_nodes = self.search(value)
+      levels = _rand_level(len(left_nodes)) + 1
+      node.next = [right_node.key for right_node in right_nodes[:levels]]
+      self.client.SaveNode(node)
+      #print '**', node.uuid, node.next
+      left_nodes = left_nodes[:levels]
+      new_left = {}
+      for left_node in left_nodes:
+        if left_node.key not in new_left:
+          new_left[left_node.key] = copy.deepcopy(left_node.value)
+      for i, key in enumerate(left_node.key for left_node in left_nodes):
+        new_left[key].next[i] = node.uuid
+      if (mcas(self.client.mc, ((left_node, new_left[left_node.key]) for
+               left_node in left_nodes))):
+        break
+
+  def contains(self, value):
+    _, right_nodes = self.search(value)
+    return right_nodes and right_nodes[0].value.value == value
 
 
 def test():

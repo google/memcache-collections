@@ -16,7 +16,8 @@
 
 import collections
 import unittest
-from memcache_collections import deque, mcas, mcas_get, AddError
+from memcache_collections import deque, mcas, mcas_get, skiplist, AddError
+from random import randrange
 from uuid import uuid4
 
 __author__ = 'John Belmonte <john@neggie.net>'
@@ -134,6 +135,19 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     mc.set(key2, 'baz')
     self.assertFalse(mcas(mc, [(item1, 'foo2'), (item2, 'bar2')]))
     self.assertEqual(mc.get_multi([key1, key2]), {key1: 'foo', key2: 'baz'})
+
+  def testSkiplist(self):
+    mc = GetMemcacheClient()
+    s = skiplist.create(mc)
+    self.assertFalse(s.contains(5))
+    s.insert(5)
+    self.assertTrue(s.contains(5))
+    s.insert(10)
+    self.assertTrue(s.contains(10))
+    for i in xrange(100):
+      x = randrange(0, 2**16)
+      s.insert(x)
+      self.assertTrue(s.contains(x))
 
 
 if __name__ == '__main__':
