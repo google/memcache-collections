@@ -149,6 +149,21 @@ class memcacheCollectionsTestCase(unittest.TestCase):
       s.insert(x)
       self.assertTrue(s.contains(x))
 
+    # test create and bind
+    s1 = skiplist.create(mc)
+    s2 = skiplist.bind(mc, s1.name)
+    s1.insert(5)
+    self.assertTrue(s2.contains(5))
+
+    # test named create and bind
+    name = 'foo'
+    s1 = skiplist.create(mc, name)
+    self.failUnlessRaises(AddError, skiplist.create, mc, name)
+    s2 = skiplist.bind(mc, name)
+    self.assertEqual(name, s1.name)
+    s1.insert(5)
+    self.assertTrue(s2.contains(5))
+
 
 if __name__ == '__main__':
   unittest.main()

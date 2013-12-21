@@ -694,6 +694,13 @@ class _SkiplistNode(object):
     return type(self) != type(other) or self.__dict__ != other.__dict__
 
 
+
+class _Big(object):
+  """Value which is larger than all others."""
+  def __cmp__(self, other):
+    return 1
+
+
 def _rand_level(max):
   x = randrange(0, 2**max - 1)
   for i in xrange(max):
@@ -705,11 +712,11 @@ class skiplist(object):
   """Lock-free skiplist on memcache.
 
   This is a simple multiset of values featuring O(log N)
-  find-k-th-largest-element.  [[Insert operations, which are also O(log N),
-  yield an approximate insertion index k.  This can be used to persist a
-  running percentile to another storage in an efficient, event driven manner.]]
+  find-k-th-largest-element.
 
   Based on "Practical lock-freedom", Keir Fraser, 2004, p. 55.
+
+  TODO: allow efficient search continuing from a previous search result
   """
 
   def __init__(self, deque_client, head_uuid):
@@ -727,8 +734,11 @@ class skiplist(object):
     Raises AddError if the named collection already exists.
     """
     client = _DequeClient(memcache_client)
+    tail = _SkiplistNode()
+    tail.value = _Big()
+    client.AddNode(tail)
     head = _SkiplistNode(name)
-    head.next = [None, ] * num_levels
+    head.next = [tail.uuid, ] * num_levels
     client.AddNode(head)
     return cls(client, head.uuid)
 
@@ -740,7 +750,7 @@ class skiplist(object):
   @property
   def name(self):
     """Returns the unique name of this collection instance."""
-    return self.anchor_uuid
+    return self.head_uuid
 
   def search(self, value):
     left_nodes, right_nodes = [], []
@@ -756,9 +766,7 @@ class skiplist(object):
       while True:
         next_uuid = node.value.next[i]
         # print next_uuid
-        if next_uuid is None:
-          next_node = None
-        elif next_uuid in visited_nodes:
+        if next_uuid in visited_nodes:
           next_node = visited_nodes[next_uuid]
         else:
           next_node = mcas_get(self.client.mc, next_uuid)
@@ -766,7 +774,7 @@ class skiplist(object):
             # TODO: retry, tolerate lost nodes
             raise NodeNotFoundError
           visited_nodes[next_uuid] = next_node
-        if next_node is None or next_node.value.value >= value:
+        if next_node.value.value >= value:
           break
         #c[i] += 1
         node = next_node
@@ -783,8 +791,7 @@ class skiplist(object):
     while True:
       left_nodes, right_nodes = self.search(value)
       levels = _rand_level(len(left_nodes)) + 1
-      node.next = [None if right_node is None else right_node.key
-                   for right_node in right_nodes[:levels]]
+      node.next = [right_node.key for right_node in right_nodes[:levels]]
       self.client.SaveNode(node)
       #print '**', node.uuid, node.next
       left_nodes = left_nodes[:levels]
@@ -800,7 +807,7 @@ class skiplist(object):
 
   def contains(self, value):
     _, right_nodes = self.search(value)
-    return right_nodes[0] and right_nodes[0].value.value == value
+    return right_nodes and right_nodes[0].value.value == value
 
 
 def test():
