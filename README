@@ -70,6 +70,43 @@ The pylibmc client is not supported by MCAS since the implementation has no
 no way to access memcache CAS ID's.
 
 
+3) Lock-free, indexed skiplist (work in progress)
+
+This is a multi-set which supports O(log N) search and indexed access
+(i.e. find the k-th-largest value).
+
+As implemented this container is vulnerable to any node loss.  An enhancement
+would be to employ redundant skiplist structures, allowing items to be
+preserved in the face of heavy node loss.
+
+Synopsis:
+
+    >>> from memcache_collections import skiplist
+    >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
+    >>> s = skiplist.create(mc, 'my_skiplist')
+    >>> for v in 'aca': s.insert(v)
+
+  Then from some other process or machine:
+
+    >>> s = skiplist.bind(mc, 'my_skiplist')
+    >>> 'a' in s
+    True
+    >>> len(s)
+    3
+    >>> s[1]
+    'a'
+    >>> s.index('a')
+    0
+    >>> s.index('c')
+    2
+    >>> s.index('b')
+    2
+    >>> s.remove('a')
+    True
+    >>> len(s)
+    2
+
+
 GENERAL CAVEATS
 
 The implementations presented make heavy use of memcache's CAS operation.

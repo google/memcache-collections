@@ -52,6 +52,7 @@ class AddError(Error):
   pass
 
 
+# TODO: use slots on node objects
 class _Node(object):
 
   def __init__(self, uuid=None):
@@ -680,6 +681,7 @@ class _SkiplistNode(object):
     self.uuid = uuid or uuid4().hex
     self.value = None
     self.next = None
+    self.width = None
 
   def __getstate__(self):
     # No need to store UUID as it's the key.  Unpickling party must restore it.
@@ -708,15 +710,55 @@ def _rand_level(max):
       return i
 
 
+def _mcas_get_or_die(mc, key, cache):
+  item = cache.get(key, None)
+  if item is None:
+    item = mcas_get(mc, key)
+  if item is None:
+    raise NodeNotFoundError
+  cache[key] = item
+  return item
+
+
 class skiplist(object):
-  """Lock-free skiplist on memcache.
+  """Lock-free indexed skiplist on memcache.
 
   This is a simple multiset of values featuring O(log N)
   find-k-th-largest-element.
 
+  Synopsis:
+
+    >>> from memcache_collections import skiplist
+    >>> mc = memcache.Client(['127.0.0.1:11211'], cache_cas=True)
+    >>> s = skiplist.create(mc, 'my_skiplist')
+    >>> for v in 'aca': s.insert(v)
+
+  then from some other process or machine:
+
+    >>> s = skiplist.bind(mc, 'my_skiplist')
+    >>> 'a' in s
+    True
+    >>> len(s)
+    3
+    >>> s[1]
+    'a'
+    >>> s.index('a')
+    0
+    >>> s.index('c')
+    2
+    >>> s.index('b')
+    2
+    >>> s.remove('a')
+    True
+    >>> len(s)
+    2
+
   Based on "Practical lock-freedom", Keir Fraser, 2004, p. 55.
 
-  TODO: allow efficient search continuing from a previous search result
+  TODO: search method which returns value and numerical index of item nearest
+  (greater or equal) to given value.  To support efficient range operations it
+  will return an opaque object which can be used to subsequently search for
+  values greater than the one returned.
   """
 
   def __init__(self, deque_client, head_uuid):
@@ -725,20 +767,27 @@ class skiplist(object):
     self.head_uuid = head_uuid
 
   @classmethod
-  def create(cls, memcache_client, name=None, num_levels=14):
+  def create(cls, memcache_client, name=None, num_levels=10):
     """Create a new collection in memcache.
 
     If optional name is given, it will be used verbatim as the key for the
     root entry of the collection.
+
+    num_levels should be roughly log(n) of your target collection size.
+    Too large of a value will cause undue read/write contention on certain
+    nodes.  Too small and lookup performance will diverge from the ideal.
 
     Raises AddError if the named collection already exists.
     """
     client = _DequeClient(memcache_client)
     tail = _SkiplistNode()
     tail.value = _Big()
+    tail.next = [None, ] * num_levels
+    tail.width = [None, ] * num_levels
     client.AddNode(tail)
     head = _SkiplistNode(name)
     head.next = [tail.uuid, ] * num_levels
+    head.width = [1, ] * num_levels
     client.AddNode(head)
     return cls(client, head.uuid)
 
@@ -752,68 +801,201 @@ class skiplist(object):
     """Returns the unique name of this collection instance."""
     return self.head_uuid
 
-  def search(self, value):
-    left_nodes, right_nodes = [], []
-    node = mcas_get(self.client.mc, self.head_uuid)
-    if node is None:
-      raise NodeNotFoundError
-    next_node = None
+  def _search(self, value):
+    """Return tuple of internal (left_nodes, right_nodes, widths)."""
+    left_nodes, right_nodes, widths = [], [], []
     visited_nodes = {}
+    node = _mcas_get_or_die(self.client.mc, self.head_uuid, visited_nodes)
+    next_node = None
     c = Counter()
-    #print len(node.value.next), self.tail_uuid
     for i in reversed(range(len(node.value.next))):
-      #print i
+      width = 0
       while True:
         next_uuid = node.value.next[i]
-        # print next_uuid
-        if next_uuid in visited_nodes:
-          next_node = visited_nodes[next_uuid]
-        else:
-          next_node = mcas_get(self.client.mc, next_uuid)
-          if next_node is None:
-            # TODO: retry, tolerate lost nodes
-            raise NodeNotFoundError
-          visited_nodes[next_uuid] = next_node
+        # TODO: retry, tolerate lost nodes
+        next_node = _mcas_get_or_die(self.client.mc, next_uuid, visited_nodes)
         if next_node.value.value >= value:
           break
+        width += node.value.width[i]
         #c[i] += 1
         node = next_node
-        #print 'advanced to', node.key
       left_nodes.append(node)
       right_nodes.append(next_node)
+      widths.append(width)
     #print 'search for %s visited %d nodes' % (value, len(visited_nodes))
     #print c
-    return list(reversed(left_nodes)), list(reversed(right_nodes))
+    return tuple(list(reversed(x)) for x in
+        (left_nodes, right_nodes, widths))
+
+  def __getitem__(self, k):
+    visited_nodes = {}
+    node = _mcas_get_or_die(self.client.mc, self.head_uuid, visited_nodes)
+    for i in reversed(range(len(node.value.next))):
+      while True:
+        if isinstance(node.value.value, _Big):
+          raise IndexError
+        width = node.value.width[i]
+        if width > k + 1:
+          break
+        k -= width
+        # TODO: retry, tolerate lost nodes
+        node = _mcas_get_or_die(self.client.mc,
+            node.value.next[i], visited_nodes)
+    value = node.value.value
+    if value is None:
+      raise IndexError  # item already removed
+    return value
 
   def insert(self, value):
     node = _SkiplistNode()
     node.value = value
     while True:
-      left_nodes, right_nodes = self.search(value)
-      levels = _rand_level(len(left_nodes)) + 1
-      node.next = [right_node.key for right_node in right_nodes[:levels]]
-      self.client.SaveNode(node)
-      #print '**', node.uuid, node.next
-      left_nodes = left_nodes[:levels]
+      left_nodes, _, widths = self._search(value)
+      max_level = len(left_nodes)
+      levels = _rand_level(max_level) + 1
+      node.next, node.width = [], []
       new_left = {}
-      for left_node in left_nodes:
-        if left_node.key not in new_left:
-          new_left[left_node.key] = copy.deepcopy(left_node.value)
-      for i, key in enumerate(left_node.key for left_node in left_nodes):
+      width = 0
+      for i, left_node in enumerate(left_nodes[:levels]):
+        node.next.append(left_node.value.next[i])
+        node.width.append(left_node.value.width[i] - width)
+        key = left_node.key
+        if key not in new_left:
+          new_left[key] = copy.deepcopy(left_node.value)
         new_left[key].next[i] = node.uuid
+        new_left[key].width[i] = width + 1
+        width += widths[i]
+      # The big efficiency hit of an indexed skiplist is that we need to make
+      # adjustments at all levels, not just for the levels of the node being
+      # inserted.  This will cause a lot of write contention for the highest
+      # level nodes.
+      for i in range(levels, max_level):
+        key = left_nodes[i].key
+        if key not in new_left:
+          new_left[key] = copy.deepcopy(left_nodes[i].value)
+        new_left[key].width[i] += 1
+      self.client.SaveNode(node)
       if (mcas(self.client.mc, ((left_node, new_left[left_node.key]) for
                left_node in left_nodes))):
         break
 
-  def contains(self, value):
-    _, right_nodes = self.search(value)
-    return right_nodes and right_nodes[0].value.value == value
+  def remove(self, value):
+    """Remove first item having given value, returning True if it existed."""
+    while True:
+      left_nodes, right_nodes, widths = self._search(value)
+      to_remove = right_nodes[0]
+      if to_remove.value.value != value:
+        return False
+      levels = len(to_remove.value.next)
+      max_level = len(left_nodes)
+      updates = {}
+      for i, left_node in enumerate(left_nodes[:levels]):
+        key = left_node.key
+        if key not in updates:
+          updates[key] = copy.deepcopy(left_node.value)
+        updates[key].next[i] = to_remove.value.next[i]
+        updates[key].width[i] += to_remove.value.width[i] - 1
+      for i in range(levels, max_level):
+        key = left_nodes[i].key
+        if key not in updates:
+          updates[key] = copy.deepcopy(left_nodes[i].value)
+        updates[key].width[i] -= 1
+      # TODO: consider deleting node
+      updates[to_remove.key] = copy.deepcopy(to_remove.value)
+      updates[to_remove.key].value = None
+      if (mcas(self.client.mc, ((node, updates[node.key]) for
+               node in left_nodes + [to_remove]))):
+        break
+    return True
+
+  def __contains__(self, value):
+    _, right_nodes, _ = self._search(value)
+    return right_nodes[0].value.value == value
+
+  def index(self, value):
+    """Return index of first item greater than or equal to given value.
+
+    If value is greater than all items, the returned value is equivalent to
+    the length of the collection.
+    """
+    _, _, widths = self._search(value)
+    return sum(widths)
+
+  def __len__(self):
+    return self.index(_Big())
+
+  def _dump(self):
+    """Return textual representation of skiplist internal structure."""
+    # TODO: make this work with any printable values
+    uuid = self.head_uuid
+    visited_nodes = {}
+    max_level = None
+    output = None
+    while True:
+      node = _mcas_get_or_die(self.client.mc, uuid, visited_nodes)
+      value = node.value.value
+      if uuid == self.head_uuid:
+        value = '^'
+        max_level = len(node.value.next)
+        output = ['', ] * max_level
+      elif isinstance(value, _Big):
+        break
+      for i in range(max_level):
+        try:
+          s = '%s/%2d  ' % (value, node.value.width[i])
+        except IndexError:
+          s = ' ' * (len(value) + 5)
+        output[i] += s
+      uuid = node.value.next[0]
+    return '\n'.join('L%02d  %s$' % (max_level - i, s) for i, s in
+        enumerate(reversed(output)))
+
+  def _check_indexes(self):
+    """Return true if node indexes are coherent."""
+    uuid = self.head_uuid
+    visited_nodes = {}
+    widths = None
+    while True:
+      node = _mcas_get_or_die(self.client.mc, uuid, visited_nodes)
+      if uuid == self.head_uuid:
+        widths = node.value.width[:]
+      else:
+        for i, width in enumerate(node.value.width):
+          if widths[i] != 0:
+            #print '**A', node.value.width
+            #print '**B', widths
+            return False
+          widths[i] = width
+        if isinstance(node.value.value, _Big):
+          return True
+      for i in xrange(len(widths)):
+        widths[i] -= 1
+      uuid = node.value.next[0]
 
 
 def test():
-  import doctest
-  import mockcache
-  doctest.testmod(extraglobs={'memcache': mockcache})
+  if True:
+    import doctest
+    import mockcache
+    doctest.testmod(extraglobs={'memcache': mockcache})
+  else:
+    import mockcache
+    mc = mockcache.Client(['127.0.0.1:11211'], cache_cas=True)
+    s = skiplist.create(mc, num_levels=5)
+    seq = 'fooobarbazanateheut'
+    print 'sequence length: ', len(seq)
+    for c in seq:
+      s.insert(c)
+    print s._dump()
+    print 'len:', len(s)
+    for c in 'ek':
+      print c, 'at index', s.index(c)
+    for i in (0, 10, 11, len(s)-1):
+      print 'index', i, 'value is', s[i]
+    print 'removing "e"'
+    s.remove('e')
+    print s._dump()
+    print s._check_indexes()
 
 
 if __name__ == '__main__':

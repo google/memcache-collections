@@ -16,6 +16,11 @@
 
 """Distributed load and concurrency test for memcache_collections.skiplist.
 
+Writer inserts random numbers.  Reader searches for random numbers and
+simply asserts returned value is >= requested.
+
+TODO: exercise remove()
+
 Run "skiplist_load_test.py manager" in one shell, then any number of
 "skiplist_load_test.py writer" and "skiplist_load_test.py reader" in other
 shells.
@@ -43,7 +48,7 @@ CONTROL_KEY = b'abc'
 WRITER_QUEUE = 'writers'
 READER_QUEUE = 'readers'
 MEMCACHE_HOSTS = ['127.0.0.1:11211']
-TARGET_RATE = 40  # None for unlimited
+TARGET_RATE = 30  # None for unlimited
 BATCH_SIZE = 100
 
 def GetMemcacheClient(hosts):
@@ -132,9 +137,8 @@ def reader():
     for i in range(command['batch_size']):
       op_time = time.time()
       search_value = random.random()
-      left_nodes, right_nodes = s.search(search_value)
-      result_value = (right_nodes[0].value.value
-                      if right_nodes and right_nodes[0] else None)
+      _, right_nodes, _ = s._search(search_value)
+      result_value = right_nodes[0].value.value
       assert result_value is None or result_value >= search_value
       if TARGET_RATE:
         time.sleep(max(0, 1 / TARGET_RATE - (time.time() - op_time)))

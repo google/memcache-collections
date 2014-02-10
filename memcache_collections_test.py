@@ -139,21 +139,38 @@ class memcacheCollectionsTestCase(unittest.TestCase):
   def testSkiplist(self):
     mc = GetMemcacheClient()
     s = skiplist.create(mc)
-    self.assertFalse(s.contains(5))
+    self.assertFalse(5 in s)
+    self.failUnlessRaises(IndexError, s.__getitem__, 0)
+    self.assertEqual(0, s.index(5))
+    self.assertTrue(s._check_indexes())
     s.insert(5)
-    self.assertTrue(s.contains(5))
+    self.assertTrue(5 in s)
     s.insert(10)
-    self.assertTrue(s.contains(10))
+    self.assertTrue(10 in s)
+    self.assertTrue(s._check_indexes())
+    self.assertEqual(2, len(s))
+    self.assertEqual(5, s[0])
+    self.assertEqual(10, s[1])
+    self.assertEqual(0, s.index(3))
+    self.assertEqual(0, s.index(5))
+    self.assertEqual(1, s.index(7))
+    self.assertEqual(1, s.index(10))
+    self.assertEqual(2, s.index(11))
+    self.assertFalse(s.remove(7))
+    self.assertTrue(s.remove(5))
+    self.assertTrue(s.remove(10))
+    self.assertEqual(0, len(s))
+    self.assertTrue(s._check_indexes())
     for i in xrange(100):
       x = randrange(0, 2**16)
       s.insert(x)
-      self.assertTrue(s.contains(x))
+      self.assertTrue(x in s)
 
     # test create and bind
     s1 = skiplist.create(mc)
     s2 = skiplist.bind(mc, s1.name)
     s1.insert(5)
-    self.assertTrue(s2.contains(5))
+    self.assertTrue(5 in s2)
 
     # test named create and bind
     name = 'foo'
@@ -162,7 +179,7 @@ class memcacheCollectionsTestCase(unittest.TestCase):
     s2 = skiplist.bind(mc, name)
     self.assertEqual(name, s1.name)
     s1.insert(5)
-    self.assertTrue(s2.contains(5))
+    self.assertTrue(5 in s2)
 
 
 if __name__ == '__main__':
